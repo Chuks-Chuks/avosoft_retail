@@ -1,0 +1,34 @@
+from dataclasses import dataclass
+from pathlib import Path
+import os
+
+@dataclass(frozen=True)
+class Settings:
+    # targets
+    target: str = os.getenv("TARGET", "postgres")  # postgres | files
+    bronze_root: Path = Path(os.getenv("BRONZE_ROOT", "data_lake/bronze"))
+
+    # scale knobs
+    seed: int = int(os.getenv("SEED", "42"))
+    sim_date: str | None = os.getenv("SIM_DATE")  # YYYY-MM-DD
+    daily_users: int = int(os.getenv("DAILY_USERS", "50"))
+    daily_orders: int = int(os.getenv("DAILY_ORDERS", "1200"))
+    daily_events: int = int(os.getenv("DAILY_EVENTS", "5000"))
+    daily_new_products: int = int(os.getenv("DAILY_NEW_PRODUCTS", "5"))
+
+    # business knobs
+    low_stock_threshold: int = int(os.getenv("LOW_STOCK_THRESHOLD", "30"))
+    restock_min: int = int(os.getenv("RESTOCK_MIN", "50"))
+    restock_max: int = int(os.getenv("RESTOCK_MAX", "150"))
+    payment_success_rate: float = float(os.getenv("PAYMENT_SUCCESS_RATE", "0.93"))
+    refund_rate: float = float(os.getenv("REFUND_RATE", "0.03"))
+
+    # db
+    db_host: str | None = os.getenv("DB_HOST")
+    db_port: str | None = os.getenv("DB_PORT")
+    db_name: str | None = os.getenv("DB_NAME")
+    db_user: str | None = os.getenv("DB_USER")
+    db_pass: str | None = os.getenv("DB_PASS")
+    db_schema: str = os.getenv("DB_SCHEMA")
+
+SETTINGS = Settings()

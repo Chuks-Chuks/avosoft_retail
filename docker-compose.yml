@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: avosoft_retail
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Nkemdebe@2024
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ddl:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avosoft_retail"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - TARGET=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=avosoft_retail
+      - DB_USER=postgres
+      - DB_PASS=Nkemdebe@2024
+      - SIM_DATE=2025-08-27
+      - DAILY_USERS=50
+      - DAILY_ORDERS=1200
+      - DAILY_EVENTS=5000
+      - DAILY_NEW_PRODUCTS=5
+      - LOW_STOCK_THRESHOLD=30
+      - RESTOCK_MIN=50
+      - RESTOCK_MAX=150
+      - PAYMENT_SUCCESS_RATE=0.93
+      - REFUND_RATE=0.03
+    command: >
+      bash -c "
+      if [ -f .env ]; then
+        export $(cat .env | grep -v '#' | xargs)
+      fi &&
+      python -m avosoft_engine.cli --date $${SIM_DATE:-2025-08-27}
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    working_dir: /app
+
+  airflow:
+    image: apache/airflow:2.9.2
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://postgres:Nkemdebe%402024@postgres:5432/avosoft_retail"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+      PYTHONWARNINGS: "ignore::SyntaxWarning:azure.synapse.artifacts.models._models_py3"
+    volumes:
+      - ./avosoft_engine/pipelines/airflow/dags:/opt/airflow/dags
+      - ./avosoft_engine/pipelines/airflow/logs:/opt/airflow/logs
+      - ./avosoft_engine/pipelines/airflow/plugins:/opt/airflow/plugins
+      - airflow_data:/opt/airflow
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: 
+      - bash
+      - -c
+      - |
+        sleep 10
+        if ! airflow db check >/dev/null 2>&1; then
+          echo "Initializing Airflow database..."
+          airflow db init
+          airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com
+          echo "Airflow database initialized successfully"
+        else
+          echo "Airflow database already initialized"
+        fi
+        echo "Starting Airflow services..."
+        airflow webserver &
+        airflow scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  pgdata:
+  airflow_data:

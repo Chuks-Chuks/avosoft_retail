@@ -1,0 +1,29 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# git/ide
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# data + artifacts
+data/
+data_lake/
+logs/
+*.log
+
+# airflow runtime dirs - FIXED PATHS
+avosoft_engine/pipelines/airflow/logs/
+avosoft_engine/pipelines/airflow/tmp/
+avosoft_engine/pipelines/airflow/plugins/__pycache__/
+
+# OS cruft
+.DS_Store
+Thumbs.db
