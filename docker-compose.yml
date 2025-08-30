@@ -4,16 +4,16 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: avosoft_retail
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Nkemdebe@2024
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./ddl:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d avosoft_retail"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,28 +22,9 @@ services:
     build: 
       context: .
       dockerfile: Dockerfile
-    environment:
-      - TARGET=postgres
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=avosoft_retail
-      - DB_USER=postgres
-      - DB_PASS=Nkemdebe@2024
-      - SIM_DATE=2025-08-27
-      - DAILY_USERS=50
-      - DAILY_ORDERS=1200
-      - DAILY_EVENTS=5000
-      - DAILY_NEW_PRODUCTS=5
-      - LOW_STOCK_THRESHOLD=30
-      - RESTOCK_MIN=50
-      - RESTOCK_MAX=150
-      - PAYMENT_SUCCESS_RATE=0.93
-      - REFUND_RATE=0.03
+    env_file: .env  # This loads ALL variables from the .env file
     command: >
       bash -c "
-      if [ -f .env ]; then
-        export $(cat .env | grep -v '#' | xargs)
-      fi &&
       python -m avosoft_engine.cli --date $${SIM_DATE:-2025-08-27}
       "
     depends_on:
@@ -51,6 +32,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      - ./.env:/app/.env  # Mount the .env file
     working_dir: /app
 
   airflow:
@@ -58,7 +40,7 @@ services:
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://postgres:Nkemdebe%402024@postgres:5432/avosoft_retail"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://${DB_USER}:${DB_PASS}@postgres:5432/${DB_NAME}"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
       PYTHONWARNINGS: "ignore::SyntaxWarning:azure.synapse.artifacts.models._models_py3"
     volumes:
