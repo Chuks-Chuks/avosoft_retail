@@ -2,3 +2,4 @@ faker==25.0.0
 faker-commerce==1.0.4
 python-dotenv==1.0.1
 psycopg2-binary==2.9.9
+boto3

@@ -16,3 +16,6 @@ __pycache__/
 
 # Ignore data directories if you have them
 data_lake/
+
+# Ignoring Apache Airflow logs
+logs/

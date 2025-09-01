@@ -24,6 +24,6 @@ avosoft_engine/pipelines/airflow/logs/
 avosoft_engine/pipelines/airflow/tmp/
 avosoft_engine/pipelines/airflow/plugins/__pycache__/
 
-# OS cruft
+# OS cruftssss
 .DS_Store
 Thumbs.db

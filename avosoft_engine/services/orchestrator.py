@@ -5,6 +5,7 @@ from ..io.file_writer import FileWriter
 from ..generators import users, products, distribution_centres, inventory, orders, events, base 
 from .repositories import Repo
 from datetime import datetime, timedelta
+from ..io.s3_writer import S3Writer 
 
 log = get_logger()
 
@@ -27,6 +28,7 @@ class Orchestrator:
         self.OrdersGenerator = orders.OrdersGenerator()
         self.EventsGenerator = events.EventsGenerator()
         self.DistributionCentersGenerator = distribution_centres.DistributionCentersGenerator()
+        self.s3_writer = S3Writer()
 
     # ------------ Helpers ------------
     @staticmethod
@@ -52,10 +54,12 @@ class Orchestrator:
             if SETTINGS.daily_new_products > 0:
                 newp = self.ProductsGenerator.generate_batch(SETTINGS.daily_new_products)
                 repo.insert_products(newp)
+                self.s3_writer.write_jsonl(f"bronze/products/ingestion_date={self.ds}/products.jsonl", newp)
 
             # --- New users for the day ---
             users = self.UsersGenerator.generate_batch(SETTINGS.daily_users, self.ds)
             repo.insert_users(users)
+            self.s3_writer.write_jsonl(f"bronze/users/ingestion_date={self.ds}/users.jsonl", users)
 
             # --- Restock low inventory to threshold ---
             inv_gen = self.InventoryGenerator   
@@ -84,11 +88,13 @@ class Orchestrator:
                     )
                 if restock_rows:
                     repo.insert_inventory_items(restock_rows)
+                    self.s3_writer.write_jsonl(f"bronze/inventory/ingestion_date={self.ds}/inventory.jsonl", restock_rows)
 
             # --- Orders ---
             user_ids = repo.users_ids()
             orders = self.OrdersGenerator.generate_orders(self.ds, user_ids, SETTINGS.daily_orders)
             repo.insert_orders(orders)
+            self.s3_writer.write_jsonl(f"bronze/orders/ingestion_date={self.ds}/orders.jsonl", orders)
 
             # --- Allocate inventory to order_items (tight link) ---
             product_pool = repo.products_pool()
@@ -158,6 +164,8 @@ class Orchestrator:
             # write order_items + mark sold inventory
             if order_item_rows:
                 repo.insert_order_items(order_item_rows)
+                self.s3_writer.write_jsonl(f"bronze/order_items/ingestion_date={self.ds}/order_items.jsonl", order_item_rows)
+
                 repo.mark_inventory_sold(sold_pairs)
 
             # --- Payments aligned to realized totals + returns ---
@@ -189,6 +197,7 @@ class Orchestrator:
                 })
             if payments:
                 repo.insert_payments(payments)
+                self.s3_writer.write_jsonl(f"bronze/payments/ingestion_date={self.ds}/payments.jsonl", payments)
 
             # --- Events: browsing + purchase + return_event ---
             ev = self.EventsGenerator
@@ -213,6 +222,7 @@ class Orchestrator:
                 all_events = browsing + purchases + returns
                 rows = [tuple(e.get(c) for c in cols) for e in all_events]
                 repo.db.bulk_insert("events", rows, cols)
+                self.s3_writer.write_jsonl(f"bronze/events/ingestion_date={self.ds}/events.jsonl", all_events)
 
             repo.commit_close(True)
             log.info(

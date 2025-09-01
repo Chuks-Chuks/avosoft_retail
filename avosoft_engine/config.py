@@ -31,4 +31,10 @@ class Settings:
     db_pass: str | None = os.getenv("DB_PASS")
     db_schema: str = os.getenv("DB_SCHEMA")
 
+    # AWS S3
+    aws_access_key_id: str | None = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_region: str | None = os.getenv("AWS_REGION")
+    s3_bucket_name: str | None = os.getenv("S3_BUCKET_NAME")
+
 SETTINGS = Settings()
