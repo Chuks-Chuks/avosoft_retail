@@ -1,4 +1,3 @@
-# avosoft/avosoft_data_engine/io/base.py
 from typing import Protocol, Iterable, Mapping
 
 class Writer(Protocol):
