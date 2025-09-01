@@ -21,7 +21,7 @@ class Orchestrator:
     - Emits browsing + purchase + return events
     """
     def __init__(self):
-        self.ds = SETTINGS.sim_date or base.fake.date_this_year().isoformat()
+        self.ds = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         self.UsersGenerator = users.UsersGenerator()
         self.ProductsGenerator = products.ProductsGenerator()
         self.InventoryGenerator = inventory.InventoryGenerator()
