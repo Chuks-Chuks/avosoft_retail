@@ -19,3 +19,7 @@ data_lake/
 
 # Ignoring Apache Airflow logs
 logs/
+
+# Ignore Terraform variables
+terraform.tfvars
+*.tfvars
