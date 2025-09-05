@@ -29,7 +29,7 @@ resource "oci_core_instance" "avosoft_app_server" {
   }
 
   metadata = {
-    ssh_authorized_keys = file("~/.ssh/id_rsa.pub") 
+    ssh_authorized_keys = file("C:/Users/phili/.ssh/id_rsa.pub") 
     user_data = base64encode(templatefile("${path.module}/user-data.sh", {
       db_host     = var.aws_db_host
       db_name     = var.aws_db_name

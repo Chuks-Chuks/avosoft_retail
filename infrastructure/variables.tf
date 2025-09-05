@@ -65,11 +65,7 @@ variable "public_subnet_cidr" {
   default     = "10.0.1.0/24"
 }
 
-variable "aws_db_host" {
-  description = "AWS RDS endpoint hostname"
-  type        = string
-  sensitive   = true
-}
+
 
 variable "aws_db_name" {
   description = "AWS PostgreSQL database name"
@@ -86,9 +82,4 @@ variable "aws_db_password" {
   description = "AWS PostgreSQL database password"
   type        = string
   sensitive   = true
-}
-
-variable "security_group_id" {
-  description = "ID of the existing AWS security group for RDS"
-  type        = string
 }

@@ -16,24 +16,24 @@ variable "availability_domain" {
 }
 
 # ADD THESE NEW VARIABLES FOR AWS DATABASE CONNECTION
-variable "db_host" {
+variable "aws_db_host" {
   description = "AWS RDS endpoint hostname"
   type        = string
   sensitive   = true
 }
 
-variable "db_name" {
+variable "aws_db_name" {
   description = "AWS PostgreSQL database name"
   type        = string
 }
 
-variable "db_user" {
+variable "aws_db_user" {
   description = "AWS PostgreSQL database user"
   type        = string
   sensitive   = true
 }
 
-variable "db_password" {
+variable "aws_db_password" {
   description = "AWS PostgreSQL database password"
   type        = string
   sensitive   = true

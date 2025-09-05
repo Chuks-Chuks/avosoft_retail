@@ -22,7 +22,6 @@ module "database" {
   aws_db_password    = var.aws_db_password
   aws_db_name        = var.aws_db_name
   publicly_accessible = true # Set to false for production
-  security_group_id   = var.security_group_id  # Your existing SG ID
 }
 
 module "compute" {
@@ -33,10 +32,10 @@ module "compute" {
   availability_domain = data.oci_identity_availability_domain.ad.name
   
   # Add these new variables for AWS database connection
-  db_host     = var.aws_db_host
-  db_name     = var.aws_db_name
-  db_user     = var.aws_db_user
-  db_password = var.aws_db_password
+  aws_db_host     = module.database.rds_address
+  aws_db_name     = var.aws_db_name
+  aws_db_user     = var.aws_db_user
+  aws_db_password = var.aws_db_password
 }
 
 

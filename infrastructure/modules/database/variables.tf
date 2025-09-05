@@ -22,10 +22,6 @@ variable "publicly_accessible" {
   default     = true
 }
 
-variable "security_group_id" {
-  description = "The ID of the existing security group to use"
-  type        = string
-}
 
 variable "aws_region" {
   description = "AWS region"

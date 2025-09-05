@@ -1,10 +1,29 @@
-# Assuming you have AWS provider configured already
+resource "aws_security_group" "db_sg" {
+  name_prefix = "avosoft-db-sg"
+  description = "Security group for Avosoft RDS database"
 
+  # Allow PostgreSQL access from ANYWHERE (you can restrict this later)
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Allows from anywhere - okay for testing
+  }
 
-# Data source to reference your EXISTING security group
-data "aws_security_group" "existing" {
-  name = "avosoft-server-sg" 
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "avosoft-database-sg"
+  }
 }
+
+
 
 # Create AWS PostgreSQL RDS instance using existing security group
 resource "aws_db_instance" "avosoft_db" {
@@ -19,28 +38,10 @@ resource "aws_db_instance" "avosoft_db" {
   parameter_group_name   = "default.postgres15"
   skip_final_snapshot    = true
   publicly_accessible    = var.publicly_accessible
-  vpc_security_group_ids = [var.security_group_id]
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
   
   tags = {
     Name = "avosoft-retail-database"
     Environment = "Production"
   }
-}
-
-# Output the connection details for OCI configuration
-output "rds_endpoint" {
-  description = "The connection endpoint for the RDS instance"
-  value       = aws_db_instance.avosoft_db.endpoint
-  sensitive   = true
-}
-
-output "rds_address" {
-  description = "The hostname of the RDS instance"
-  value       = aws_db_instance.avosoft_db.address
-  sensitive   = true
-}
-
-output "rds_port" {
-  description = "The database port"
-  value       = aws_db_instance.avosoft_db.port
 }
