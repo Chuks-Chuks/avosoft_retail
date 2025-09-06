@@ -4,7 +4,7 @@ apt-get update
 apt-get install -y python3-pip git postgresql-client
 
 # Clone your repository
-git clone https://github.com/your-username/avosoft_retail.git /opt/avosoft_retail
+git clone https://github.com/Chuks-Chuks/avosoft_retail.git /opt/avosoft_retail
 
 # Install Python dependencies
 pip3 install -r /opt/avosoft_retail/requirements.txt
