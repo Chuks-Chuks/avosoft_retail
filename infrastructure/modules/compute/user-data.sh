@@ -31,11 +31,5 @@ chmod 600 /opt/avosoft_retail/.env
 # Start your application services
 cd /opt/avosoft_retail
 
-# Start FastAPI app and log output
-nohup python3 -m uvicorn avosoft_engine.main:app --host 0.0.0.0 --port 8000 >> /var/log/avosoft/api.log 2>&1 &
-
-# Start Streamlit dashboard and log output
-nohup streamlit run avosoft_engine/dashboard.py --server.port 8501 --server.address=0.0.0.0 >> /var/log/avosoft/dashboard.log 2>&1 &
-
 # Create a simple health check file
 echo "Application deployed successfully at $(date)" > /opt/avosoft_retail/deployment.log

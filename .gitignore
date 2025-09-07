@@ -23,3 +23,8 @@ logs/
 # Ignore Terraform variables
 terraform.tfvars
 *.tfvars
+**/.terraform/*
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.exe
