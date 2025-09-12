@@ -1,3 +1,5 @@
+# avosoft_retail/avosoft_engine/io/pg_writer.py
+
 from psycopg2.extras import execute_values
 from .pg_conn import get_conn
 from ..config import SETTINGS

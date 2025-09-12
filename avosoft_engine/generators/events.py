@@ -1,3 +1,5 @@
+# avosoft_retail/avosoft_engine/generators/events.py
+
 import uuid, random
 from .base import BaseGenerator, fake
 

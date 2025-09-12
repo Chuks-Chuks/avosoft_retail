@@ -28,3 +28,6 @@ terraform.tfvars
 *.tfstate
 *.tfstate.backup
 *.exe
+
+# ignore my playground files
+playground/

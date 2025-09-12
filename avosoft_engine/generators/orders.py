@@ -1,3 +1,5 @@
+# avosoft_retail/avosoft_engine/generators/orders.py
+
 import uuid, random
 from .base import BaseGenerator
 

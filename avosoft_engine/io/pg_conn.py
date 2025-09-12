@@ -9,4 +9,11 @@ def get_conn():
         dbname=SETTINGS.db_name,
         user=SETTINGS.db_user,
         password=SETTINGS.db_pass,
+        cursor_factory=psycopg2.extras.DictCursor,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        connect_timeout=10
     )
+

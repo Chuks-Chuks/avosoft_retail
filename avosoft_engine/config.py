@@ -1,6 +1,11 @@
+# avosoft_retail/avosoft_engine/config.py
+
 from dataclasses import dataclass
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
@@ -38,3 +43,4 @@ class Settings:
     s3_bucket_name: str | None = os.getenv("S3_BUCKET_NAME")
 
 SETTINGS = Settings()
+# debug

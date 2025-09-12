@@ -1,3 +1,5 @@
+# avosoft_retail/avosoft_engine/generators/base.py
+
 from faker import Faker
 import random
 from ..config import SETTINGS

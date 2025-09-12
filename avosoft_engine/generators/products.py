@@ -1,3 +1,5 @@
+# avosoft_retail/avosoft_engine/generators/products.py
+
 import uuid, random, string
 from .base import BaseGenerator, fake
 
@@ -97,6 +99,11 @@ SKU_PREFIX = {
 }
 
 class ProductsGenerator(BaseGenerator):
+    """Generates product catalog data."""
+    def __init__(self):
+        super().__init__()
+        self.generated_skus = set()
+
     def _make_name(self, department: str, category: str, subcategory: str) -> str:
         # e.g., "Cobalt Wireless Headphones" / "Oak Dining Table"
         color_or_style = random.choice([fake.color_name(), fake.word().title()])
@@ -105,8 +112,17 @@ class ProductsGenerator(BaseGenerator):
 
     def _sku(self, department: str) -> str:
         prefix = SKU_PREFIX.get(department, "GEN")
-        body = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        return f"{prefix}-{body}"
+        max_attempts = 10
+
+        for _ in range(max_attempts):
+            body = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            sku = f"{prefix}-{body}"
+
+            if sku not in self.generated_skus:
+                self.generated_skus.add(sku)
+                return sku
+        
+        return f"{prefix}-{str(uuid.uuid4())[:8].upper()}"
 
     def generate_batch(self, n: int):
         rows = []

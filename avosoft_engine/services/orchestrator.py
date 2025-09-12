@@ -1,255 +1,286 @@
+# avosoft_engine/services/orchestrator.py
 import uuid, random
+from datetime import datetime, timedelta
 from ..config import SETTINGS
 from ..log import get_logger
 from ..io.file_writer import FileWriter
-from ..generators import users, products, distribution_centres, inventory, orders, events, base 
-from .repositories import Repo
-from datetime import datetime, timedelta
-from ..io.s3_writer import S3Writer 
+from ..io.s3_writer import S3Writer
+from ..generators import users, products, distribution_centres, inventory, orders, events, payments
+from ..generators.order_items import OrderItemGenerator
+from .repositories import Repo, InventoryRepository
 
 log = get_logger()
 
+
 class Orchestrator:
     """
-    Daily simulator for ALL domains with tight inventory linkage:
-    - Seeds DCs/products if empty; adds a few products daily
-    - Creates new users
-    - Restocks low-stock items
-    - Generates orders and allocates real inventory_items to order_items
-      * sets shipped_at / delivered_at / returned_at on a portion of items
-    - Creates payments aligned to realized (allocated) totals and returns
-    - Emits browsing + purchase + return events
+    Strict generator:
+    - Optionally reads minimal DB state (users/products/DCs/unsold inventory)
+    - Persists inventory/orders/order_items/payments to DB (operational state)
+    - Writes full payload to JSONL/S3 for data engineering pipelines
     """
-    def __init__(self):
-        self.ds = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    def __init__(self, read_db_state: bool = True):
+        self.now = datetime.now()
+        self.ds = (self.now - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.ingestion_time = self.now.strftime("%H:%M:%S")
+
         self.UsersGenerator = users.UsersGenerator()
         self.ProductsGenerator = products.ProductsGenerator()
         self.InventoryGenerator = inventory.InventoryGenerator()
         self.OrdersGenerator = orders.OrdersGenerator()
         self.EventsGenerator = events.EventsGenerator()
-        self.DistributionCentersGenerator = distribution_centres.DistributionCentersGenerator()
+        self.DCGenerator = distribution_centres.DistributionCentersGenerator()
+        self.OrderItemGenerator = OrderItemGenerator()  
+        self.PaymentsGenerator = payments.PaymentsGenerator()  
+        self.file_writer = FileWriter()
         self.s3_writer = S3Writer()
+        self.read_db_state = read_db_state
+        self.repo = Repo() if read_db_state else None
+        self.inv_repo = InventoryRepository()  # for DB writes/reservations
 
-    # ------------ Helpers ------------
-    @staticmethod
-    def _maybe_timestamp(base_iso: str, min_hours: int, max_hours: int, probability: float) -> str | None:
-        """Return base + N hours with given probability; else None."""
-        if random.random() > probability:
-            return None
-        base = datetime.fromisoformat(base_iso)
-        bump = timedelta(hours=random.randint(min_hours, max_hours))
-        return (base + bump).strftime("%Y-%m-%d %H:%M:%S")
+    def generate_day(self) -> dict:
+        # --- 0) read minimal pools from DB (optional) ---
+        existing_users = self.repo.users_id_list() if self.read_db_state else []
+        # we fetch product pool from DB if available, else we'll seed and persist later
+        product_pool_dict = self.repo.products_pool_dict() if self.read_db_state else {}
+        dc_ids = self.repo.dc_ids() if self.read_db_state else []
+        unsold_by_pid = self.repo.unsold_inventory_by_product_map() if self.read_db_state else {}
 
-    # ------------ Main run (Postgres) ------------
-    def _run_pg(self):
-        repo = Repo()
-        try:
-            # --- Seed DCs ---
-            repo.ensure_dcs()
-
-            # --- Seed products if empty; add some daily ---
-            if len(repo.products_pool()) == 0:
-                base_products = self.ProductsGenerator.generate_batch(500)
-                repo.insert_products(base_products)
-            if SETTINGS.daily_new_products > 0:
-                newp = self.ProductsGenerator.generate_batch(SETTINGS.daily_new_products)
-                repo.insert_products(newp)
-                self.s3_writer.write_jsonl(f"bronze/products/ingestion_date={self.ds}/products.jsonl", newp)
-
-            # --- New users for the day ---
-            users = self.UsersGenerator.generate_batch(SETTINGS.daily_users, self.ds)
-            repo.insert_users(users)
-            self.s3_writer.write_jsonl(f"bronze/users/ingestion_date={self.ds}/users.jsonl", users)
-
-            # --- Restock low inventory to threshold ---
-            inv_gen = self.InventoryGenerator   
-            low_pids = repo.low_stock_products(SETTINGS.low_stock_threshold)
-            if low_pids:
-                pool = {p["product_id"]: p for p in repo.products_pool()}
-                restock_rows = []
-                for pid in low_pids:
-                    p = pool.get(pid)
-                    if not p:
-                        continue
-                    dc = repo.random_dc()
-                    qty = random.randint(SETTINGS.restock_min, SETTINGS.restock_max)
-                    restock_rows += inv_gen.restock_rows(
-                        ds=self.ds,
-                        product_id=pid,
-                        qty=qty,
-                        dc_id=dc,
-                        cost=p["cost"],
-                        name=p["name"],
-                        brand=p["brand"],
-                        retail=p["retail_price"],
-                        dept=p["department"],
-                        category=p["category"],
-                        sku=p["sku"],
-                    )
-                if restock_rows:
-                    repo.insert_inventory_items(restock_rows)
-                    self.s3_writer.write_jsonl(f"bronze/inventory/ingestion_date={self.ds}/inventory.jsonl", restock_rows)
-
-            # --- Orders ---
-            user_ids = repo.users_ids()
-            orders = self.OrdersGenerator.generate_orders(self.ds, user_ids, SETTINGS.daily_orders)
-            repo.insert_orders(orders)
-            self.s3_writer.write_jsonl(f"bronze/orders/ingestion_date={self.ds}/orders.jsonl", orders)
-
-            # --- Allocate inventory to order_items (tight link) ---
-            product_pool = repo.products_pool()
-            desired_pairs = self.OrdersGenerator.expand_order_items(orders, product_pool)
-            unsold_map = repo.unsold_inventory_by_product()
-
-            order_item_rows = []  # payload for bulk insert
-            sold_pairs = []       # (inv_id, sold_at)
-            totals_by_order: dict[str, float] = {}
-            returns_by_order: dict[str, float] = {}
-
-            # probabilities
-            ship_p = 0.85          # % items that ship
-            deliver_p = 0.92       # % shipped items that deliver
-            return_p = SETTINGS.refund_rate  # align return rate with refund rate knob
-
-            for (order_id, user_id, prod) in desired_pairs:
-                inv_list = unsold_map.get(prod["product_id"], [])
-                if not inv_list:
-                    # out of stock -> skip this item
-                    continue
-
-                inv_id = inv_list.pop(0)
-                price = float(prod["retail_price"])
-                # find the order's created_at once
-                created_at = next(o["created_at"] for o in orders if o["order_id"] == order_id)
-
-                # timestamps lifecycle per item
-                shipped_at = self._maybe_timestamp(created_at, 2, 48, ship_p)
-                delivered_at = None
-                if shipped_at:
-                    delivered_at = self._maybe_timestamp(shipped_at, 24, 96, deliver_p)
-                returned_at = None
-                # returns only possible if delivered
-                if delivered_at and random.random() < return_p:
-                    # returns 1–30 days after delivery
-                    delivered_dt = datetime.fromisoformat(delivered_at)
-                    returned_dt = delivered_dt + timedelta(days=random.randint(1, 30))
-                    # cap to same day 18:00 for simplicity
-                    returned_at = returned_dt.strftime("%Y-%m-%d 18:00:00")
-
-                # compose row
-                order_item_rows.append((
-                    str(uuid.uuid4()),       # id
-                    order_id,                # order_id
-                    user_id,                 # user_id
-                    prod["product_id"],      # product_id
-                    inv_id,                  # inventory_item_id
-                    # status
-                    "returned" if returned_at else ("delivered" if delivered_at else ("shipped" if shipped_at else "pending")),
-                    created_at,              # created_at
-                    shipped_at,              # shipped_at
-                    delivered_at,            # delivered_at
-                    returned_at,             # returned_at
-                    price                    # sale_price
-                ))
-
-                # mark inventory as sold at order time
-                sold_pairs.append((inv_id, created_at))
-
-                # aggregate totals
-                totals_by_order[order_id] = round(totals_by_order.get(order_id, 0.0) + price, 2)
-                if returned_at:
-                    # assume full refund for returned items (can be partial if desired)
-                    returns_by_order[order_id] = round(returns_by_order.get(order_id, 0.0) + price, 2)
-
-            # write order_items + mark sold inventory
-            if order_item_rows:
-                repo.insert_order_items(order_item_rows)
-                self.s3_writer.write_jsonl(f"bronze/order_items/ingestion_date={self.ds}/order_items.jsonl", order_item_rows)
-
-                repo.mark_inventory_sold(sold_pairs)
-
-            # --- Payments aligned to realized totals + returns ---
-            payments = []
-            for o in orders:
-                oid = o["order_id"]
-                realized_total = float(totals_by_order.get(oid, 0.0))
-                if realized_total <= 0:
-                    status = "failed"
-                    amount = 0.0
-                    refund_amt = 0.0
-                else:
-                    # success/failure independent of returns; refunds applied after
-                    status = "success" if random.random() < SETTINGS.payment_success_rate else "failed"
-                    amount = realized_total if status == "success" else 0.0
-                    refund_amt = 0.0
-                    # If items returned, apply refund up to paid amount
-                    if status == "success":
-                        refund_amt = min(amount, float(returns_by_order.get(oid, 0.0)))
-
-                payments.append({
-                    "payment_id": str(uuid.uuid4()),
-                    "order_id": oid,
-                    "payment_date": self.ds,
-                    "status": status,
-                    "amount": round(amount, 2),
-                    "refund_amount": round(refund_amt, 2),
-                    "provider": random.choice(["StripeLike", "PayPalLike"]),
-                })
-            if payments:
-                repo.insert_payments(payments)
-                self.s3_writer.write_jsonl(f"bronze/payments/ingestion_date={self.ds}/payments.jsonl", payments)
-
-            # --- Events: browsing + purchase + return_event ---
-            ev = self.EventsGenerator
-            browsing = ev.generate_browsing(self.ds, user_ids, SETTINGS.daily_events)
-
-            # successful paid orders (amount > 0, status success) -> purchase events
-            paid_success = {p["order_id"] for p in payments if p["status"] == "success" and p["amount"] > 0}
-            paid_orders = [o for o in orders if o["order_id"] in paid_success]
-            purchases = ev.purchase_events(self.ds, paid_orders)
-
-            # return events for items with returned_at
-            returned_items = []
-            for row in order_item_rows:
-                # row layout:
-                # (id, order_id, user_id, product_id, inventory_item_id, status, created_at, shipped_at, delivered_at, returned_at, sale_price)
-                if row[9]:  # returned_at present
-                    returned_items.append({"user_id": row[2]})
-            returns = ev.return_events(self.ds, returned_items) if returned_items else []
-
-            if browsing or purchases or returns:
-                cols = ["id","user_id","sequence_number","session_id","created_at","ip_address","city","state","postal_code","browser","traffic_source","uri","event_type","device_type"]
-                all_events = browsing + purchases + returns
-                rows = [tuple(e.get(c) for c in cols) for e in all_events]
-                repo.db.bulk_insert("events", rows, cols)
-                self.s3_writer.write_jsonl(f"bronze/events/ingestion_date={self.ds}/events.jsonl", all_events)
-
-            repo.commit_close(True)
-            log.info(
-                f"PG daily OK | users={len(users)} orders={len(orders)} "
-                f"items={len(order_item_rows)} paid={sum(1 for p in payments if p['status']=='success')} "
-                f"events={len(browsing)+len(purchases)+len(returns)} returns_items={len(returned_items)}"
-            )
-        except Exception:
-            repo.commit_close(False)
-            raise
-
-    # ------------ Files mode (kept minimal; primary path is Postgres) ------------
-    def _run_files(self):
-        fw = FileWriter()
-        users = self.UsersGenerator.generate_batch(SETTINGS.daily_users, self.ds)
-        products = self.ProductsGenerator.generate_batch(500 + SETTINGS.daily_new_products)
-        orders = self.OrdersGenerator.generate_orders(self.ds, [u["id"] for u in users], SETTINGS.daily_orders)
-
-        fw.write_jsonl(f"{SETTINGS.bronze_root}/users/ingestion_date={self.ds}/users.jsonl", users)
-        fw.write_jsonl(f"{SETTINGS.bronze_root}/products/ingestion_date={self.ds}/products.jsonl", products)
-        fw.write_jsonl(f"{SETTINGS.bronze_root}/orders/ingestion_date={self.ds}/orders.jsonl", orders)
-        log.info(f"FILES mode OK: users={len(users)} products={len(products)} orders={len(orders)}")
-
-    # ------------ Entrypoint ------------
-    def run(self):
-        if SETTINGS.target == "postgres":
-            self._run_pg()
+        # --- Distribution centers ---
+        existing_dcs = self.repo.dc_ids() if self.read_db_state else []
+        new_dcs = []
+        if not existing_dcs:
+            # seed DCs locally then persist to DB (production ordering)
+            new_dcs = self.DCGenerator.generate_seed(10)
+            # persist seeded DCs so inventory can reference them
+            self.inv_repo.insert_distribution_centers(new_dcs)
+            log.info(f"[{self.ds}] Inserted {len(new_dcs)} new DCs ✅")
+            dc_ids = [dc["id"] for dc in new_dcs]
         else:
-            self._run_files()
+            dc_ids = existing_dcs
 
+        # incremental DC growth: every 5 months on day 1
+        if (self.now.month % 5 == 0) and (self.now.day == 1):
+            extra = self.DCGenerator.generate_seed(1)
+            new_dcs.extend(extra)
+            # persist the new DC
+            self.inv_repo.insert_distribution_centers(extra)
+            dc_ids.append(extra[0]["id"])
+
+        # --- Users ---
+        new_users = self.UsersGenerator.generate_batch(SETTINGS.daily_users, self.ds)
+        if new_users:
+            # persist new users to DB (users have no FK dependencies)
+            self.inv_repo.insert_users(new_users)   
+            log.info(f"[{self.ds}] Inserted {len(new_users)} new users ✅")
+        all_user_ids = existing_users + [u["id"] for u in new_users]
+
+        # --- Products + initial inventory seed ---
+        new_products = []
+        initial_inventory = []
+        if not product_pool_dict:
+            # seed base catalog in-memory
+            new_products = self.ProductsGenerator.generate_batch(500)
+            # persist products BEFORE any inventory writes (fixes FK violation)
+            if new_products:
+                self.inv_repo.insert_products(new_products)
+                log.info(f"[{self.ds}] Inserted {len(new_products)} new products ✅")
+
+            # update local product_pool_dict for rest of run
+            for p in new_products:
+                product_pool_dict[p["product_id"]] = p
+
+            # seed initial inventory for all new products and persist to DB
+            for p in new_products:
+                if not dc_ids:
+                    seed_dcs = self.DCGenerator.generate_seed(5)
+                    self.inv_repo.insert_distribution_centers(seed_dcs)
+                    dc_ids = [d["id"] for d in seed_dcs]
+
+                dc = random.choice(dc_ids)
+                qty = random.randint(100, 300)
+                rows = self.InventoryGenerator.restock_rows(
+                    ds=self.ds,
+                    product_id=p["product_id"],
+                    qty=qty,
+                    dc_id=dc,
+                    cost=p["cost"],
+                    name=p["name"],
+                    brand=p["brand"],
+                    retail=p["retail_price"],
+                    dept=p["department"],
+                    category=p["category"],
+                    sku=p["sku"],
+                )
+                if rows:
+                    # persist inventory after products & dcs are in DB
+                    self.inv_repo.insert_inventory_rows(rows)
+                    initial_inventory.extend(rows)
+                    unsold_by_pid.setdefault(p["product_id"], []).extend([r["id"] for r in rows])
+        else:
+            # there is an existing product pool in DB; optionally add daily new products
+            if SETTINGS.daily_new_products > 0:
+                new_products = self.ProductsGenerator.generate_batch(SETTINGS.daily_new_products)
+                if new_products:
+                    # persist incremental new products before any inventory referencing them
+                    self.inv_repo.insert_products(new_products)
+                for p in new_products:
+                    product_pool_dict[p["product_id"]] = p
+
+        # --- Restock low inventory ---
+        restock_rows = []
+        low_pids = self.repo.low_stock_product_ids(SETTINGS.low_stock_threshold) if self.read_db_state else []
+
+        for pid in low_pids:
+            prod = product_pool_dict.get(pid)
+            if not prod:
+                # If product missing from in-memory pool, attempt to pull from DB (defensive)
+                product_pool_dict = self.repo.products_pool_dict()
+                prod = product_pool_dict.get(pid)
+            if not prod:
+                continue
+            dc = random.choice(dc_ids)
+            qty = random.randint(SETTINGS.restock_min, SETTINGS.restock_max)
+            rows = self.InventoryGenerator.restock_rows(
+                ds=self.ds,
+                product_id=pid,
+                qty=qty,
+                dc_id=dc,
+                cost=prod["cost"],
+                name=prod["name"],
+                brand=prod["brand"],
+                retail=prod["retail_price"],
+                dept=prod["department"],
+                category=prod["category"],
+                sku=prod["sku"],
+            )
+            if rows:
+                # persist restock rows
+                self.inv_repo.insert_inventory_rows(rows)
+                restock_rows.extend(rows)
+                unsold_by_pid.setdefault(pid, []).extend([r["id"] for r in rows])
+
+        # --- Orders ---
+        orders_today = self.OrdersGenerator.generate_orders(self.ds, all_user_ids, SETTINGS.daily_orders)
+        if orders_today:
+            # persist orders (orders do not have FK to inventory)
+            self.inv_repo.insert_orders(orders_today)
+            log.info(f"[{self.ds}] Inserted {len(orders_today)} orders ✅")
+
+        # --- Allocate inventory to order_items ---
+        desired_pairs = self.OrdersGenerator.expand_order_items(orders_today, list(product_pool_dict.values()))
+        order_item_rows = []
+        totals_by_order = {}
+        returns_by_order = {}
+
+        for order_id, user_id, prod in desired_pairs:
+            # reserve one unit for the product
+            try:
+                prod["product_id"] = str(uuid.UUID(prod["product_id"]))
+            except ValueError:
+                continue  # skip malformed UUIDs
+
+            reserved = self.inv_repo.reserve_stock(prod["product_id"], 1)
+            if not reserved:
+                # out-of-stock -> skip this item
+                continue
+
+            inv = reserved[0]
+            # use the order item generator to produce a schema-aligned dict
+            items = self.OrderItemGenerator.generate_items(
+                ds=self.ds,
+                order_id=order_id,
+                user_id=user_id,
+                product_rows=[inv],
+                qty=1
+            )
+
+            if not items:
+                continue
+
+            item = items[0]
+            order_item_rows.append(item)
+
+            totals_by_order[order_id] = round(totals_by_order.get(order_id, 0.0) + item["sale_price"], 2)
+            if item["returned_at"]:
+                returns_by_order[order_id] = round(returns_by_order.get(order_id, 0.0) + item["sale_price"], 2)
+
+        if order_item_rows:
+            # persist order_items (these reference orders & inventory_items which both exist)
+            self.inv_repo.insert_order_items(order_item_rows)
+            log.info(f"[{self.ds}] Inserted {len(order_item_rows)} order_items ✅")
+
+
+        # --- Payments (moved into generator) ---
+        payments = self.PaymentsGenerator.generate(
+            ds=self.ds,
+            orders=orders_today,
+            totals_by_order=totals_by_order,
+            returns_by_order=returns_by_order
+        )
+
+        if payments:
+            self.inv_repo.insert_payments(payments)
+            log.info(f"[{self.ds}] Inserted {len(payments)} payments ✅")
+
+        # --- Events ---
+        ev = self.EventsGenerator
+        browsing = ev.generate_browsing(self.ds, all_user_ids, SETTINGS.daily_events)
+
+        paid_success = {p["order_id"] for p in payments if p["status"] == "success" and p["amount"] > 0}
+        paid_orders = [o for o in orders_today if o["order_id"] in paid_success]
+        purchases = ev.purchase_events(self.ds, paid_orders)
+
+        returned_items = [{"user_id": row["user_id"]} for row in order_item_rows if row["returned_at"]]
+        returns = ev.return_events(self.ds, returned_items) if returned_items else []
+
+        payload = {
+            "date": self.ds,
+            "ingestion_time": self.ingestion_time,
+            "users": new_users,
+            "distribution_centers": new_dcs or [{"id": i} for i in dc_ids],
+            "products": new_products,
+            "inventory": restock_rows + (initial_inventory if 'initial_inventory' in locals() else []),
+            "orders": orders_today,
+            "order_items": order_item_rows,
+            "payments": payments,
+            "events": browsing + purchases + returns
+        }
+
+        log.info(
+            f"Generated | users={len(new_users)} products={len(new_products)} "
+            f"orders={len(orders_today)} items={len(order_item_rows)} "
+            f"paid={sum(1 for p in payments if p['status']=='success')} "
+            f"events={len(payload['events'])}"
+        )
+        return payload
+
+
+    # ------------ output writers ------------
+    def write_bronze(self, payload: dict):
+        d = payload["date"]
+        t = payload["ingestion_time"]
+
+        def w(path, rows):
+            rows_to_write = rows or []
+
+            try:
+                self.s3_writer.write_jsonl(f"bronze/{path}", rows_to_write)
+                log.info(f"✅ S3 write ok: {path}")
+            except Exception as e:
+                log.warning(f"Failed to write s3 bronze {path}: {e}")
+
+        w(f"users/ingestion_date={d}/ingestion_time={t}/users.jsonl", payload.get("users"))
+        w(f"products/ingestion_date={d}/ingestion_time={t}/products.jsonl", payload.get("products"))
+        w(f"distribution_centers/ingestion_date={d}/ingestion_time={t}/dcs.jsonl", payload.get("distribution_centers"))
+        w(f"inventory/ingestion_date={d}/ingestion_time={t}/inventory.jsonl", payload.get("inventory"))
+        w(f"orders/ingestion_date={d}/ingestion_time={t}/orders.jsonl", payload.get("orders"))
+        w(f"order_items/ingestion_date={d}/ingestion_time={t}/order_items.jsonl", payload.get("order_items"))
+        w(f"payments/ingestion_date={d}/ingestion_time={t}/payments.jsonl", payload.get("payments"))
+        w(f"events/ingestion_date={d}/ingestion_time={t}/events.jsonl", payload.get("events"))
+
+    def run(self):
+        payload = self.generate_day()
+        self.write_bronze(payload)
+        return payload

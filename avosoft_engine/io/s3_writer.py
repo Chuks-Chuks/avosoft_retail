@@ -1,4 +1,4 @@
-# avosoft_engine/io/s3_writer.py
+# avosoft_retail/avosoft_engine/io/s3_writer.py
 import boto3
 import json
 import csv

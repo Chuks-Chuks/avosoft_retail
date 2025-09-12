@@ -1,8 +1,10 @@
+# avosoft_retail/avosoft_engine/generators/distribution_centres.py
+
 import uuid, random
 from .base import BaseGenerator
 
 class DistributionCentersGenerator(BaseGenerator):
-    def generate_seed(self, n=10):
+    def generate_seed(self, n: int) -> list[dict]:
         centers = []
         for _ in range(n):
             centers.append({
