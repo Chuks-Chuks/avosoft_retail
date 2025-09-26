@@ -2,6 +2,7 @@
 
 import uuid, random, string
 from .base import BaseGenerator, fake
+import time
 
 # ----- Department → Category → Subcategory (from your spec, expanded lightly) -----
 DEPT_CATALOG = {
@@ -112,17 +113,9 @@ class ProductsGenerator(BaseGenerator):
 
     def _sku(self, department: str) -> str:
         prefix = SKU_PREFIX.get(department, "GEN")
-        max_attempts = 10
-
-        for _ in range(max_attempts):
-            body = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            sku = f"{prefix}-{body}"
-
-            if sku not in self.generated_skus:
-                self.generated_skus.add(sku)
-                return sku
-        
-        return f"{prefix}-{str(uuid.uuid4())[:8].upper()}"
+        nanos = time.time_ns()  # Nanosecond precision
+        random_bits = random.getrandbits(32)  # Additional randomness
+        return f"{prefix}-{nanos}{random_bits:08X}"  
 
     def generate_batch(self, n: int):
         rows = []

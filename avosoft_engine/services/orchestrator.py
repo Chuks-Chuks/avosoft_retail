@@ -8,6 +8,7 @@ from ..io.s3_writer import S3Writer
 from ..generators import users, products, distribution_centres, inventory, orders, events, payments
 from ..generators.order_items import OrderItemGenerator
 from .repositories import Repo, InventoryRepository
+from time import sleep
 
 log = get_logger()
 
@@ -41,11 +42,12 @@ class Orchestrator:
 
     def generate_day(self) -> dict:
         # --- 0) read minimal pools from DB (optional) ---
-        existing_users = self.repo.users_id_list() if self.read_db_state else []
+        #existing_users = self.repo.users_id_list() if self.read_db_state else []
         # we fetch product pool from DB if available, else we'll seed and persist later
         product_pool_dict = self.repo.products_pool_dict() if self.read_db_state else {}
         dc_ids = self.repo.dc_ids() if self.read_db_state else []
         unsold_by_pid = self.repo.unsold_inventory_by_product_map() if self.read_db_state else {}
+        log.info(f"DEBUG SETTINGS -> users={SETTINGS.daily_users}, orders={SETTINGS.daily_orders}, events={SETTINGS.daily_events}")
 
         # --- Distribution centers ---
         existing_dcs = self.repo.dc_ids() if self.read_db_state else []
@@ -57,6 +59,7 @@ class Orchestrator:
             self.inv_repo.insert_distribution_centers(new_dcs)
             log.info(f"[{self.ds}] Inserted {len(new_dcs)} new DCs ✅")
             dc_ids = [dc["id"] for dc in new_dcs]
+            self.inv_repo.ensure_commit()
         else:
             dc_ids = existing_dcs
 
@@ -66,15 +69,19 @@ class Orchestrator:
             new_dcs.extend(extra)
             # persist the new DC
             self.inv_repo.insert_distribution_centers(extra)
+            self.inv_repo.ensure_commit()
             dc_ids.append(extra[0]["id"])
 
         # --- Users ---
         new_users = self.UsersGenerator.generate_batch(SETTINGS.daily_users, self.ds)
+        new_user_ids = [u["id"] for u in new_users]
         if new_users:
             # persist new users to DB (users have no FK dependencies)
             self.inv_repo.insert_users(new_users)   
             log.info(f"[{self.ds}] Inserted {len(new_users)} new users ✅")
-        all_user_ids = existing_users + [u["id"] for u in new_users]
+            sleep(2)  # initiating sleep to ensure commit
+            self.inv_repo.ensure_commit()
+        all_user_ids = self.repo.users_id_list() if self.read_db_state else [] + new_user_ids
 
         # --- Products + initial inventory seed ---
         new_products = []
@@ -86,7 +93,7 @@ class Orchestrator:
             if new_products:
                 self.inv_repo.insert_products(new_products)
                 log.info(f"[{self.ds}] Inserted {len(new_products)} new products ✅")
-
+                self.inv_repo.ensure_commit()
             # update local product_pool_dict for rest of run
             for p in new_products:
                 product_pool_dict[p["product_id"]] = p
@@ -96,6 +103,7 @@ class Orchestrator:
                 if not dc_ids:
                     seed_dcs = self.DCGenerator.generate_seed(5)
                     self.inv_repo.insert_distribution_centers(seed_dcs)
+                    self.inv_repo.ensure_commit()
                     dc_ids = [d["id"] for d in seed_dcs]
 
                 dc = random.choice(dc_ids)
@@ -116,6 +124,7 @@ class Orchestrator:
                 if rows:
                     # persist inventory after products & dcs are in DB
                     self.inv_repo.insert_inventory_rows(rows)
+                    self.inv_repo.ensure_commit()
                     initial_inventory.extend(rows)
                     unsold_by_pid.setdefault(p["product_id"], []).extend([r["id"] for r in rows])
         else:
@@ -125,6 +134,7 @@ class Orchestrator:
                 if new_products:
                     # persist incremental new products before any inventory referencing them
                     self.inv_repo.insert_products(new_products)
+                    self.inv_repo.ensure_commit()
                 for p in new_products:
                     product_pool_dict[p["product_id"]] = p
 
@@ -158,6 +168,7 @@ class Orchestrator:
             if rows:
                 # persist restock rows
                 self.inv_repo.insert_inventory_rows(rows)
+                self.inv_repo.ensure_commit()
                 restock_rows.extend(rows)
                 unsold_by_pid.setdefault(pid, []).extend([r["id"] for r in rows])
 
@@ -167,7 +178,7 @@ class Orchestrator:
             # persist orders (orders do not have FK to inventory)
             self.inv_repo.insert_orders(orders_today)
             log.info(f"[{self.ds}] Inserted {len(orders_today)} orders ✅")
-
+            self.inv_repo.ensure_commit()
         # --- Allocate inventory to order_items ---
         desired_pairs = self.OrdersGenerator.expand_order_items(orders_today, list(product_pool_dict.values()))
         order_item_rows = []
@@ -210,7 +221,7 @@ class Orchestrator:
             # persist order_items (these reference orders & inventory_items which both exist)
             self.inv_repo.insert_order_items(order_item_rows)
             log.info(f"[{self.ds}] Inserted {len(order_item_rows)} order_items ✅")
-
+            self.inv_repo.ensure_commit()
 
         # --- Payments (moved into generator) ---
         payments = self.PaymentsGenerator.generate(
@@ -222,6 +233,7 @@ class Orchestrator:
 
         if payments:
             self.inv_repo.insert_payments(payments)
+            self.inv_repo.ensure_commit()
             log.info(f"[{self.ds}] Inserted {len(payments)} payments ✅")
 
         # --- Events ---

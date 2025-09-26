@@ -93,6 +93,10 @@ class InventoryRepository:
         self.retry_delay = 2
         self.batch_size = 1000
 
+    def ensure_commit(self):
+        """Ensure all previous operations are committed"""
+        self.conn.commit()
+
     def _execute_with_retry(self, operation, *args, **kwargs):
         for attempt in range(self.max_retries):
             try:
@@ -261,7 +265,7 @@ class InventoryRepository:
             rows = [tuple(u[c] for c in cols) for u in users]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.users ({','.join(cols)}) VALUES %s ON CONFLICT (email) DO NOTHING"
+                sql = f"INSERT INTO avosoft_retail.users ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
                 self._chunked_execute(cur, sql, rows, self.batch_size)
             self.conn.commit()
         

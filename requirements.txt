@@ -3,3 +3,5 @@ faker-commerce==1.0.4
 python-dotenv==1.0.1
 psycopg2-binary==2.9.9
 boto3
+pytz==2023.3
+urllib3==1.26.6

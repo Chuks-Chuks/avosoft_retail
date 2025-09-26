@@ -18,7 +18,7 @@ class UsersGenerator(BaseGenerator):
                 "id": str(uuid.uuid4()),
                 "first_name": first,
                 "last_name": last,
-                "email": f"{first.lower()}.{last.lower()}{fake.pyint(100,999)}@{random.choice(emails)}",
+                "email": f"{first.lower()}.{last.lower()}{uuid.uuid4().hex}@{random.choice(emails)}",
                 "age": fake.pyint(16, 80),
                 "gender": gender,
                 "state": fake.state(),

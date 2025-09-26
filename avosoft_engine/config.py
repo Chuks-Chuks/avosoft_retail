@@ -17,7 +17,7 @@ class Settings:
     seed: int = int(os.getenv("SEED", "42"))
     sim_date: str | None = os.getenv("SIM_DATE")  # YYYY-MM-DD
     daily_users: int = int(os.getenv("DAILY_USERS", "50"))
-    daily_orders: int = int(os.getenv("DAILY_ORDERS", "1200"))
+    daily_orders: int = int(os.getenv("DAILY_ORDERS", "750"))
     daily_events: int = int(os.getenv("DAILY_EVENTS", "5000"))
     daily_new_products: int = int(os.getenv("DAILY_NEW_PRODUCTS", "5"))
 
