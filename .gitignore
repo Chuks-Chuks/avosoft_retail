@@ -1,5 +1,5 @@
 # Ignore environment variables file
-.env
+.env*
 
 # Ignore any virtual environment or Python cache
 .venv/
