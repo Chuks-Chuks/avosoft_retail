@@ -38,6 +38,26 @@ class Repo:
         rows = self._query_with_retry("SELECT id FROM avosoft_retail.users;")
         return [r[0] if isinstance(r, tuple) else r["id"] for r in rows]
 
+    # Added the user_address_map to fetch customer's address.
+    def user_addresses_map(self) -> Dict[str, dict]:
+        rows = self._query_with_retry("""
+            SELECT id, street_address, city, state, postal_code, country, latitude, longitude
+            FROM avosoft_retail.users;
+        """)
+        out: Dict[str, dict] = {}
+        for r in rows:
+            if isinstance(r, tuple):
+                out[r[0]] = {
+                    "street_address": r[1], "city": r[2], "state": r[3],
+                    "postal_code": r[4], "country": r[5], "latitude": r[6], "longitude": r[7]
+                }
+            else:
+                out[r["id"]] = {
+                    "street_address": r["street_address"], "city": r["city"], "state": r["state"],
+                    "postal_code": r["postal_code"], "country": r["country"], "latitude": r["latitude"], "longitude": r["longitude"]
+                }
+        return out
+
     def products_pool_dict(self) -> Dict[str, dict]:
         rows = self._query_with_retry("""
             SELECT product_id, name, brand, department, category, sku, cost, retail_price, subcategory
