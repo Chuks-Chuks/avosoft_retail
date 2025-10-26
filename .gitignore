@@ -1,3 +1,6 @@
+# Ignore cron-logs
+cron.log
+
 # Ignore environment variables file
 .env*
 
