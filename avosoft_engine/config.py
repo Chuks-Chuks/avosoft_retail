@@ -7,6 +7,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Ensuring the environment variable loads dynamically. 
+
+app_env = os.getenv("APP_ENV", "dev")  # Before each run I will declare the APP_ENV in the console --Also remember to ensure that the cron job gives this command for production. 
+
+# Mapping the target environment files. Depending on what is declared in the console. 
+
+env_file_map = {
+    "dev": ".env.dev",
+    "prod": ".env.prod"
+    "staging": ".env.staging"
+}
+
+# Loading the appropraite .env file
+
+load_dotenv(env_file_map.get(app_env, ".env"))
+
+
 @dataclass(frozen=True)
 class Settings:
     # targets
@@ -44,3 +61,10 @@ class Settings:
 
 SETTINGS = Settings()
 # debug
+
+
+# Rememeber to declare the APP_ENV in the console
+# For example:"
+"""
+APP_ENV=prod python -m <folder>.<filename>
+"""
