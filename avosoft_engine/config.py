@@ -9,23 +9,27 @@ load_dotenv()
 
 # Ensuring the environment variable loads dynamically. 
 
-app_env = os.getenv("APP_ENV", "dev")  # Before each run I will declare the APP_ENV in the console --Also remember to ensure that the cron job gives this command for production. 
+app_env = os.getenv("APP_ENV", "dev").lower()  # Before each run I will declare the APP_ENV in the console --Also remember to ensure that the cron job gives this command for production. 
 
 # Mapping the target environment files. Depending on what is declared in the console. 
 
 env_file_map = {
     "dev": ".env.dev",
-    "prod": ".env.prod"
+    "prod": ".env.prod",
     "staging": ".env.staging"
 }
 
 # Loading the appropraite .env file
 
-load_dotenv(env_file_map.get(app_env, ".env"))
+env_file = env_file_map.get(app_env, ".env")
+print(f'This is the env file {env_file}')
+load_dotenv(dotenv_path=env_file, override=True)
 
+print("ENV_SOURCE =", os.getenv("ENV_SOURCE"))
 
 @dataclass(frozen=True)
 class Settings:
+
     # targets
     target: str = os.getenv("TARGET", "postgres")  # postgres | files
     bronze_root: Path = Path(os.getenv("BRONZE_ROOT", "data_lake/bronze"))
