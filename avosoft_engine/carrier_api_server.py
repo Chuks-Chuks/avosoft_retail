@@ -1,12 +1,12 @@
 # carrier_api_server.py
 import json
-import logging
 from datetime import datetime
 from flask import Flask, request, jsonify
 from avosoft_engine.services.carrier_service import DatabaseCarrierService
+from .log import get_logger
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+log = get_logger()
 svc = DatabaseCarrierService()
 
 
@@ -20,7 +20,7 @@ def list_carriers():
             carriers = svc.list_carriers()
         return jsonify({"success": True, "carriers": carriers})
     except Exception as e:
-        app.logger.exception("list_carriers failed")
+        log.exception("list_carriers failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -40,7 +40,7 @@ def create_shipment():
         shipment = svc.create_shipment(order_id, order_item_id, destination, origin_dc, service_level)
         return jsonify({"success": True, "shipment": shipment})
     except Exception as e:
-        app.logger.exception("create_shipment failed")
+        log.excepion("create_shipment failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -52,7 +52,7 @@ def get_tracking(tracking_number):
             return jsonify({"success": False, "error": "not found"}), 404
         return jsonify({"success": True, "tracking": res})
     except Exception as e:
-        app.logger.exception("get_tracking failed")
+        log.exception("get_tracking failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -63,7 +63,7 @@ def webhook_update():
         svc.apply_webhook_update(payload)
         return jsonify({"success": True})
     except Exception as e:
-        app.logger.exception("webhook_update failed")
+        log.exception("webhook_update failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
