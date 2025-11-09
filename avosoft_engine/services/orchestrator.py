@@ -5,11 +5,10 @@ from ..config import SETTINGS
 from ..log import get_logger
 from ..io.file_writer import FileWriter
 from ..io.s3_writer import S3Writer
-from ..generators import users, products, distribution_centres, inventory, orders, events, payments
+from ..generators import users, products, distribution_centres, inventory, orders, events, payments, shipping  # Added the shipping module
 from ..generators.order_items import OrderItemGenerator
 from .repositories import Repo, InventoryRepository
 from time import sleep
-
 log = get_logger()
 
 
@@ -34,6 +33,7 @@ class Orchestrator:
         self.DCGenerator = distribution_centres.DistributionCentersGenerator()
         self.OrderItemGenerator = OrderItemGenerator()  
         self.PaymentsGenerator = payments.PaymentsGenerator()  
+        self.APIShippingGenerator = shipping.APIShippingGenerator()  # Possible failure here
         self.file_writer = FileWriter()
         self.s3_writer = S3Writer()
         self.read_db_state = read_db_state
@@ -216,12 +216,83 @@ class Orchestrator:
             totals_by_order[order_id] = round(totals_by_order.get(order_id, 0.0) + item["sale_price"], 2)
             if item["returned_at"]:
                 returns_by_order[order_id] = round(returns_by_order.get(order_id, 0.0) + item["sale_price"], 2)
+            
 
         if order_item_rows:
             # persist order_items (these reference orders & inventory_items which both exist)
             self.inv_repo.insert_order_items(order_item_rows)
             log.info(f"[{self.ds}] Inserted {len(order_item_rows)} order_items ✅")
             self.inv_repo.ensure_commit()
+
+            # --- Starting the shipping creation phase ---
+            try:
+                # building the user address map
+                log.info("Building the user_address")
+                user_address_map = self.repo.user_addresses_map() if self.read_db_state else {}
+            # HEREEEEEEEEEEEEEEEEEE!!!!!!!!!!!!!!!!!!!!!!
+                shipments_to_insert = []
+                shipment_events = []
+
+                # Decide which order_items need shippments:
+                # Creating shipment for items that  doesn't already have a shipmentin DB.
+                dest = user_address_map.get(item["user_id"], {})
+                origin_dc_id = None
+                # try to pick DC by country if available
+                try:
+                    origin_dc_id = self.inv_repo.dc_id_for_country(dest.get("country"))
+                except Exception:
+                    origin_dc_id = None
+
+                # Create via API (will fallback if API is unavailable)
+                try:
+                    log.info("Creating shipment...")
+                    shipment = ship_gen.create_shipment_via_api(item, dest, origin_dc_id)
+                except Exception as e:
+                    log.warning(f"Failed to create shipment for order_item {item['id']}: {e}")
+
+                # normalise fields expected by insert_shipments
+                shipments_to_insert.append({
+                    "shipment_id": shipment.get("shipment_id") or str(uuid.uuid4()),
+                    "order_id": shipment["order_id"],
+                    "order_item_id": shipment["order_item_id"],
+                    "carrier": shipment.get("carrier"),
+                    "tracking_number": shipment.get("tracking_number"),
+                    "status": shipment.get("status", "label_created"),
+                    "created_at": shipment.get("created_at"),
+                    "shipped_at": shipment.get("shipped_at"),
+                    "estimated_delivery": shipment.get("estimated_delivery"),
+                    "actual_delivery": shipment.get("actual_deivery"),
+                    "shipping_cost": shipment.get("shipping_cost"),
+                    "origin_address": shipment.get("origin_address"),
+                    "destination_address": shipment.get("destination_address"),
+                    "carrier_id": shipping.get("carrier_id")
+                })
+
+                # initialise event row
+                shipment_events.append({
+                    "event_id": str(uuid.uuid4()),
+                    "shipment_id": shipments_to_insert[-1]["shipment_id"],
+                    "carrier_id": shipments_to_insert[-1]["carrier_id"],
+                    "status": shipments_to_insert[-1]["status"],
+                    "description": "Shipment created",
+                    "event_time": datetime.utcnow(),
+                    "location": {},
+                    "raw_payload": shipment
+                })
+        
+                if shipments_to_insert:
+                    self.inv_repo.insert_shipments(shipments_to_insert)
+                    log.info(f"[{self.ds}] Inserted {len(shipments_to_insert)} shipments")
+                    self.inv_repo.ensure_commit()
+
+                if shipment_events:
+                    self.inv_repo.insert_shipments(shipment_events)
+                    log.info(f"[{self.ds}] Inserted {len(shipment_events)} shipments_events")
+                    self.inv_repo.ensure_commit()
+            
+            except Exception as e:
+                log.warning(f"Shipping phase failed: {e}")
+        # ---- END: Shipping creation phase ended
 
         # --- Payments (moved into generator) ---
         payments = self.PaymentsGenerator.generate(
