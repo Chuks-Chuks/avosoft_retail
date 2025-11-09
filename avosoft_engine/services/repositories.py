@@ -7,6 +7,8 @@ from ..config import SETTINGS
 from ..io.pg_writer import PostgresWriter
 from ..io.pg_conn import get_conn
 import psycopg2
+import json
+from datetime import datetime
 
 class Repo:
     """Read-only helpers for the generator with connection resilience"""
@@ -15,6 +17,7 @@ class Repo:
         self.db = PostgresWriter()
         self.max_retries = 3
         self.retry_delay = 2
+        self.schema = SETTINGS.db_schema # Fetch schema field here
 
     def _query_with_retry(self, sql: str, params=None):
         for attempt in range(self.max_retries):
@@ -35,14 +38,14 @@ class Repo:
                     raise
 
     def users_id_list(self) -> List[str]:
-        rows = self._query_with_retry("SELECT id FROM avosoft_retail.users;")
+        rows = self._query_with_retry(f"SELECT id FROM {self.schema}.users;")
         return [r[0] if isinstance(r, tuple) else r["id"] for r in rows]
 
     # Added the user_address_map to fetch customer's address.
     def user_addresses_map(self) -> Dict[str, dict]:
-        rows = self._query_with_retry("""
+        rows = self._query_with_retry(f"""
             SELECT id, street_address, city, state, postal_code, country, latitude, longitude
-            FROM avosoft_retail.users;
+            FROM {self.schema}.users;
         """)
         out: Dict[str, dict] = {}
         for r in rows:
@@ -59,9 +62,9 @@ class Repo:
         return out
 
     def products_pool_dict(self) -> Dict[str, dict]:
-        rows = self._query_with_retry("""
+        rows = self._query_with_retry(f"""
             SELECT product_id, name, brand, department, category, sku, cost, retail_price, subcategory
-            FROM avosoft_retail.products;
+            FROM {self.schema}.products;
         """)
         out: Dict[str, dict] = {}
         for r in rows:
@@ -75,13 +78,13 @@ class Repo:
         return out
 
     def dc_ids(self) -> List[str]:
-        rows = self._query_with_retry("SELECT id FROM avosoft_retail.distribution_centers;")
+        rows = self._query_with_retry(f"SELECT id FROM {self.schema}.distribution_centers;")
         return [r[0] if isinstance(r, tuple) else r["id"] for r in rows]
 
     def unsold_inventory_by_product_map(self) -> Dict[str, List[str]]:
-        rows = self._query_with_retry("""
+        rows = self._query_with_retry(f"""
             SELECT id, product_id
-            FROM avosoft_retail.inventory_items
+            FROM {self.schema}.inventory_items
             WHERE sold_at IS NULL
             ORDER BY created_at;
         """)
@@ -92,10 +95,10 @@ class Repo:
         return out
 
     def low_stock_product_ids(self, threshold: int) -> List[str]:
-        rows = self._query_with_retry("""
+        rows = self._query_with_retry(f"""
             WITH c AS (
               SELECT product_id, count(*) as unsold
-              FROM avosoft_retail.inventory_items
+              FROM {self.schema}.inventory_items
               WHERE sold_at IS NULL
               GROUP BY 1
             )
@@ -112,6 +115,7 @@ class InventoryRepository:
         self.max_retries = 3
         self.retry_delay = 2
         self.batch_size = 1000
+        self.schema = SETTINGS.db_schema
 
     def ensure_commit(self):
         """Ensure all previous operations are committed"""
@@ -138,9 +142,9 @@ class InventoryRepository:
     def reserve_stock(self, product_id: str, qty: int) -> List[Dict[str, Any]]:
         def _reserve():
             with self.conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, product_id, cost, product_retail_price
-                    FROM avosoft_retail.inventory_items
+                    FROM {self.schema}.inventory_items
                     WHERE product_id = %s::uuid AND sold_at IS NULL
                     LIMIT %s FOR UPDATE SKIP LOCKED;
                 """, (product_id, qty))
@@ -149,8 +153,8 @@ class InventoryRepository:
                     return []
 
                 inv_ids = [r[0] for r in rows]
-                cur.execute("""
-                    UPDATE avosoft_retail.inventory_items
+                cur.execute(f"""
+                    UPDATE {self.schema}.inventory_items
                     SET sold_at = NOW()
                     WHERE id = ANY(%s::uuid[]);
                 """, (inv_ids,))
@@ -174,7 +178,7 @@ class InventoryRepository:
             
             with self.conn.cursor() as cur:
                 sql = f"""
-                    INSERT INTO avosoft_retail.products ({','.join(cols)}) 
+                    INSERT INTO {self.schema}.products ({','.join(cols)}) 
                     VALUES %s 
                     ON CONFLICT (sku) DO UPDATE SET
                         cost = EXCLUDED.cost,
@@ -199,7 +203,7 @@ class InventoryRepository:
             vals = [tuple(d.get(c) for c in cols) for d in dcs]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.distribution_centers ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.distribution_centers ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
                 self._chunked_execute(cur, sql, vals, self.batch_size)
             self.conn.commit()
         
@@ -217,7 +221,7 @@ class InventoryRepository:
             vals = [tuple(r.get(col) for col in cols) for r in rows]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.inventory_items ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.inventory_items ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
                 self._chunked_execute(cur, sql, vals, self.batch_size)
             self.conn.commit()
         
@@ -233,7 +237,7 @@ class InventoryRepository:
             vals = [ (o["order_id"], o["user_id"], o.get("status","pending"), o.get("gender"), o["created_at"], o["num_of_items"]) for o in orders ]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.orders ({','.join(cols)}) VALUES %s ON CONFLICT (order_id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.orders ({','.join(cols)}) VALUES %s ON CONFLICT (order_id) DO NOTHING"
                 self._chunked_execute(cur, sql, vals, self.batch_size)
             self.conn.commit()
         
@@ -253,7 +257,7 @@ class InventoryRepository:
                 vals = [tuple(i.get(c) for c in cols) for i in items]
             
             with self.conn.cursor() as cur:
-                sql = "INSERT INTO avosoft_retail.order_items (id,order_id,user_id,product_id,inventory_item_id,status,created_at,shipped_at,delivered_at,returned_at,sale_price) VALUES %s ON CONFLICT (id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.order_items (id,order_id,user_id,product_id,inventory_item_id,status,created_at,shipped_at,delivered_at,returned_at,sale_price) VALUES %s ON CONFLICT (id) DO NOTHING"
                 self._chunked_execute(cur, sql, vals, self.batch_size)
             self.conn.commit()
         
@@ -269,7 +273,7 @@ class InventoryRepository:
             vals = [tuple(p.get(c) for c in cols) for p in payments]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.payments ({','.join(cols)}) VALUES %s ON CONFLICT (payment_id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.payments ({','.join(cols)}) VALUES %s ON CONFLICT (payment_id) DO NOTHING"
                 self._chunked_execute(cur, sql, vals, self.batch_size)
             self.conn.commit()
         
@@ -285,8 +289,108 @@ class InventoryRepository:
             rows = [tuple(u[c] for c in cols) for u in users]
             
             with self.conn.cursor() as cur:
-                sql = f"INSERT INTO avosoft_retail.users ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
+                sql = f"INSERT INTO {self.schema}.users ({','.join(cols)}) VALUES %s ON CONFLICT (id) DO NOTHING"
                 self._chunked_execute(cur, sql, rows, self.batch_size)
             self.conn.commit()
         
         self._execute_with_retry(_insert)
+
+
+    def insert_shipments(self, shipments: list[dict], batch_size: int = 200):
+        """
+        Insert shipments into avosoft_retail.shipments idempotently.
+        shipments: list of dicts with keys:
+            shipment_id, order_id, order_item_id, carrier, tracking_number,
+            status, created_at, shipped_at, estimated_delivery, actual_delivery,
+            shipping_cost, origin_address (dict), destination_address (dict), carrier_id (optional)
+        """
+        if not shipments:
+            return
+
+        sql = f"""
+        INSERT INTO {self.schema}.shipments (
+            shipment_id, order_id, order_item_id, carrier, tracking_number, status,
+            created_at, shipped_at, estimated_delivery, actual_delivery, shipping_cost,
+            origin_address, destination_address, last_updated, carrier_id
+        ) VALUES %s
+        ON CONFLICT (tracking_number) DO UPDATE SET
+            status = EXCLUDED.status,
+            last_updated = NOW(),
+            shipped_at = COALESCE(EXCLUDED.shipped_at, avosoft_retail.shipments.shipped_at),
+            estimated_delivery = COALESCE(EXCLUDED.estimated_delivery, avosoft_retail.shipments.estimated_delivery),
+            actual_delivery = COALESCE(EXCLUDED.actual_delivery, avosoft_retail.shipments.actual_delivery),
+            shipping_cost = COALESCE(EXCLUDED.shipping_cost, avosoft_retail.shipments.shipping_cost),
+            origin_address = COALESCE(EXCLUDED.origin_address, avosoft_retail.shipments.origin_address),
+            destination_address = COALESCE(EXCLUDED.destination_address, avosoft_retail.shipments.destination_address),
+            carrier_id = COALESCE(EXCLUDED.carrier_id, avosoft_retail.shipments.carrier_id)
+        ;
+        """
+
+        cur = self.conn.cursor()
+        vals = []
+        for s in shipments:
+            vals.append((
+                s.get("shipment_id") or str(uuid.uuid4()),
+                s["order_id"],
+                s["order_item_id"],
+                s.get("carrier"),
+                s["tracking_number"],
+                s.get("status", "label_created"),
+                s.get("created_at"),
+                s.get("shipped_at"),
+                s.get("estimated_delivery"),
+                s.get("actual_delivery"),
+                s.get("shipping_cost"),
+                json.dumps(s.get("origin_address") or {}),
+                json.dumps(s.get("destination_address") or {}),
+                s.get("last_updated") or s.get("created_at"),
+                s.get("carrier_id")
+            ))
+        # chunked execute pattern (similar to your other methods)
+        for i in range(0, len(vals), batch_size):
+            chunk = vals[i:i+batch_size]
+            execute_values(cur, sql, chunk, page_size=len(chunk))
+        self.conn.commit()
+
+    def insert_shipment_events(self, events: list[dict], batch_size: int = 200):
+        """
+        Insert shipment event rows into avosoft_retail.shipment_events.
+        Each event: event_id (optional), shipment_id, carrier_code, status, description, event_time, location, raw_payload
+        """
+        if not events:
+            return
+        sql = f"""
+        INSERT INTO {self.schema}.shipment_events
+        (event_id, shipment_id, carrier_code, status, description, event_time, location, raw_payload, created_at)
+        VALUES %s
+        ON CONFLICT (event_id) DO NOTHING;
+        """
+        cur = self.conn.cursor()
+        vals = []
+        for e in events:
+            vals.append((
+                e.get("event_id") or str(uuid.uuid4()),
+                e["shipment_id"],
+                e.get("carrier_code"),
+                e.get("status"),
+                e.get("description"),
+                e.get("event_time"),
+                json.dumps(e.get("location") or {}),
+                json.dumps(e.get("raw_payload") or {}),
+                e.get("created_at") or datetime.utcnow()
+            ))
+        for i in range(0, len(vals), batch_size):
+            execute_values(cur, sql, vals[i:i+batch_size], page_size=len(vals[i:i+batch_size]))
+        self.conn.commit()
+
+    # helpful helper: find DC id by country (expects distribution_centres table stores countries as array/json)
+    def dc_id_for_country(self, country: str):
+        cur = self.conn.cursor()
+        cur.execute(f"""
+            SELECT id
+            FROM {self.schema}.distribution_centres
+            WHERE %s = ANY(countries)
+            LIMIT 1;
+        """, (country,))
+        row = cur.fetchone()
+        return row[0] if row else None
