@@ -6,3 +6,4 @@ boto3
 pytz==2023.3
 urllib3==1.26.6
 requests
+flask
