@@ -5,3 +5,4 @@ psycopg2-binary==2.9.9
 boto3
 pytz==2023.3
 urllib3==1.26.6
+requests
